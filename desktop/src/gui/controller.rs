@@ -611,6 +611,13 @@ impl GuiController {
         self.gui.is_context_menu_visible()
     }
 
+    /// F6: show/hide the AQW memory panel.
+    pub fn toggle_aqw_memory_panel(&mut self) {
+        self.gui.aqw_memory.toggle();
+        self.repaint_after = Duration::ZERO;
+        self.window.request_redraw();
+    }
+
     pub fn needs_render(&self) -> bool {
         Instant::now().duration_since(self.last_update) >= self.repaint_after
     }

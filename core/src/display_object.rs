@@ -425,6 +425,32 @@ fn aqw_release_detached_caches(context: &mut UpdateContext<'_>, tick: u64) {
     context.orphan_manager.put_detached(kept);
 }
 
+/// "Clean memory" button: drop the cached textures of every tracked object
+/// that is currently off the stage, regardless of how recently it was drawn.
+/// Anything on the stage is left alone, so nothing visible flickers.
+/// Returns the estimated number of bytes released.
+pub(crate) fn aqw_release_offstage_caches_now(context: &mut UpdateContext<'_>) -> u64 {
+    use std::sync::atomic::Ordering::Relaxed;
+    let before = AQW_CACHE_RELEASED_BYTES.load(Relaxed);
+    let entries = context.orphan_manager.take_detached();
+    let mut kept = Vec::with_capacity(entries.len());
+    let mut budget = u32::MAX;
+    for (weak, seen_at) in entries {
+        let Some(dobj) = crate::orphan_manager::OrphanManager::upgrade_detached(weak, context.gc())
+        else {
+            continue;
+        };
+        if dobj.is_on_stage(context) {
+            kept.push((weak, seen_at));
+        } else {
+            aqw_release_subtree_caches(dobj, &mut budget);
+        }
+    }
+    AQW_DETACHED_TRACKED.store(kept.len() as u64, Relaxed);
+    context.orphan_manager.put_detached(kept);
+    AQW_CACHE_RELEASED_BYTES.load(Relaxed).saturating_sub(before)
+}
+
 pub(crate) fn aqw_release_subtree_caches(obj: DisplayObject<'_>, budget: &mut u32) {
     if *budget == 0 {
         return;

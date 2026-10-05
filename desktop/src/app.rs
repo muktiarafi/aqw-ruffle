@@ -372,6 +372,9 @@ impl MainWindow {
                         if event.physical_key == PhysicalKey::Code(KeyCode::F9) {
                             ruffle_core::aqw_crt_toggle_external();
                         }
+                        if event.physical_key == PhysicalKey::Code(KeyCode::F6) && !event.repeat {
+                            self.gui.toggle_aqw_memory_panel();
+                        }
                         if event.physical_key == PhysicalKey::Code(KeyCode::F7) && !event.repeat {
                             self.aqw_toggle_fast_overlay();
                         }

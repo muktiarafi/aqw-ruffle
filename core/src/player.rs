@@ -2262,6 +2262,25 @@ impl Player {
         self.needs_render = true;
     }
 
+    /// AQW "Clean memory" button. Frees what can be rebuilt on demand:
+    /// cached textures of off-stage objects, the renderer's spare pooled
+    /// textures, and unreachable script/display objects (full GC cycle).
+    /// Returns (cache bytes, pooled GPU bytes) released.
+    pub fn aqw_clean_memory(&mut self) -> (u64, u64) {
+        let cache_bytes = self.mutate_with_update_context(|context| {
+            crate::display_object::aqw_release_offstage_caches_now(context)
+        });
+        self.gc_arena.borrow_mut().finish_cycle();
+        let pool_bytes = self.renderer.aqw_trim_pools();
+        self.needs_render = true;
+        tracing::info!(
+            "AQW clean memory: released {} MB of off-stage caches, {} MB of pooled GPU textures",
+            cache_bytes / (1024 * 1024),
+            pool_bytes / (1024 * 1024)
+        );
+        (cache_bytes, pool_bytes)
+    }
+
     /// Ask for a redraw even though nothing in the movie changed (e.g. a
     /// renderer setting was switched).
     pub fn set_needs_render(&mut self) {

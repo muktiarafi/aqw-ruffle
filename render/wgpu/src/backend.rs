@@ -110,6 +110,32 @@ static RENDER_ENCODE_NS: std::sync::atomic::AtomicU64 = std::sync::atomic::Atomi
 static RENDER_SUBMIT_NS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static RENDER_FRAMES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
+/// AQW memory panel: this process's private memory in bytes (what Task
+/// Manager's "Commit size" shows). Windows only.
+pub fn aqw_process_memory_bytes() -> Option<u64> {
+    #[cfg(windows)]
+    {
+        gpu_memory::process_commit()
+    }
+    #[cfg(not(windows))]
+    {
+        None
+    }
+}
+
+/// AQW memory panel: (used, budget) bytes of dedicated GPU memory, sampled at
+/// most once per second. Windows only.
+pub fn aqw_gpu_memory_bytes() -> Option<(u64, u64)> {
+    #[cfg(windows)]
+    {
+        gpu_memory::query_cached()
+    }
+    #[cfg(not(windows))]
+    {
+        None
+    }
+}
+
 #[cfg(windows)]
 fn process_commit_mb() -> u64 {
     gpu_memory::process_commit().unwrap_or(0) / (1024 * 1024)
@@ -1301,6 +1327,10 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
 
     fn take_trivial_blend_target(&mut self) -> (u64, u64, u64, [u64; 4]) {
         crate::blend::take_trivial_blend_target()
+    }
+
+    fn aqw_trim_pools(&mut self) -> u64 {
+        self.offscreen_texture_pool.evict_all_idle() + self.texture_pool.evict_all_idle()
     }
 
     fn take_render_timings(&mut self) -> (u64, u64, u64, u64) {

@@ -55,6 +55,17 @@ impl TexturePool {
             * u64::from(key.format.block_copy_size(None).unwrap_or(4))
     }
 
+    /// Frees every pooled texture that isn't in use right now. Returns how
+    /// many bytes were released. Used by the "Clean memory" button.
+    pub fn evict_all_idle(&mut self) -> u64 {
+        let before = self.retained_bytes();
+        let now = self.clock.fetch_add(1, Ordering::Relaxed) + 1;
+        for pool in self.pools.values() {
+            self.total_frees += pool.evict_idle(now, 1, usize::MAX) as u64;
+        }
+        before.saturating_sub(self.retained_bytes())
+    }
+
     pub fn retained_bytes(&self) -> u64 {
         self.pools
             .iter()

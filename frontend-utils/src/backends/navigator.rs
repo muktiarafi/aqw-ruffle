@@ -2,6 +2,7 @@ mod aqw_cache;
 mod fetch;
 
 pub use aqw_cache::set_disk_dir as set_aqw_asset_cache_dir;
+pub use aqw_cache::{clear_memory as clear_aqw_asset_memory, memory_bytes as aqw_asset_memory_bytes};
 
 use crate::backends::navigator::fetch::{Response, ResponseBody};
 use crate::content::PlayingContent;

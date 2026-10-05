@@ -108,6 +108,21 @@ pub fn cache_key(url: &Url, is_get: bool, has_body: bool) -> Option<CacheKey> {
     })
 }
 
+/// Bytes currently held by the in-memory copy (for the memory panel).
+pub fn memory_bytes() -> usize {
+    memory().lock().map(|cache| cache.bytes).unwrap_or(0)
+}
+
+/// Drops the in-memory copy (the disk copy stays). Returns bytes released.
+pub fn clear_memory() -> usize {
+    let Ok(mut cache) = memory().lock() else {
+        return 0;
+    };
+    let released = cache.bytes;
+    *cache = MemoryCache::default();
+    released
+}
+
 pub fn get_memory(key: &CacheKey) -> Option<Vec<u8>> {
     let cache = memory().lock().ok()?;
     cache.entries.get(&key.url).map(|bytes| bytes.as_ref().clone())

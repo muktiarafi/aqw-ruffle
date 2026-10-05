@@ -167,6 +167,12 @@ pub trait RenderBackend: Any {
         (0, 0, 100, [0; 4])
     }
 
+    /// AQW "Clean memory": release spare GPU memory the backend keeps around
+    /// for reuse. Returns bytes released (best effort).
+    fn aqw_trim_pools(&mut self) -> u64 {
+        0
+    }
+
     fn take_render_timings(&mut self) -> (u64, u64, u64, u64) {
         (0, 0, 0, 0)
     }

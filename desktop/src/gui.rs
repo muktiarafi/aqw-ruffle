@@ -1,3 +1,4 @@
+mod aqw_memory_panel;
 mod context_menu;
 mod controller;
 pub mod dialogs;
@@ -48,6 +49,8 @@ pub struct RuffleGui {
 
     was_suspended_before_debug: bool,
     preferences: GlobalPreferences,
+    /// AQW memory monitor + "Clean memory" button (F6).
+    pub(crate) aqw_memory: aqw_memory_panel::AqwMemoryPanel,
 }
 
 impl RuffleGui {
@@ -77,6 +80,7 @@ impl RuffleGui {
 
             event_loop,
             preferences,
+            aqw_memory: Default::default(),
         }
     }
 
@@ -98,6 +102,7 @@ impl RuffleGui {
         }
 
         self.dialogs.show(&locale, egui_ctx, player.as_deref_mut());
+        self.aqw_memory.show(egui_ctx, player.as_deref_mut());
 
         if let Some(player) = player {
             let was_suspended = player.debug_ui().should_suspend_player();
