@@ -34,7 +34,7 @@ reqwest = { workspace = true, features = [
     "http2",
     "macos-system-configuration",
 ] }
-tokio = { workspace = true, features = ["net", "macros"], optional = true }
+tokio = { workspace = true, features = ["net", "macros", "rt"], optional = true }
 cpal = { workspace = true, optional = true }
 bytemuck = { workspace = true, optional = true }
 

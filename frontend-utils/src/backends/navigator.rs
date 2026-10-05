@@ -1,4 +1,7 @@
+mod aqw_cache;
 mod fetch;
+
+pub use aqw_cache::set_disk_dir as set_aqw_asset_cache_dir;
 
 use crate::backends::navigator::fetch::{Response, ResponseBody};
 use crate::content::PlayingContent;
@@ -283,6 +286,38 @@ impl<F: FutureSpawner<Error> + 'static, I: NavigatorInterface> NavigatorBackend
                 })
             }
             _ => Box::pin(async move {
+                // AQW asset cache: serve static game files from memory/disk.
+                let cache_key = aqw_cache::cache_key(
+                    &processed_url,
+                    matches!(request.method(), NavigationMethod::Get),
+                    request.body().as_ref().is_some_and(|(body, _)| !body.is_empty()),
+                );
+                if let Some(key) = &cache_key {
+                    let mut cached = aqw_cache::get_memory(key);
+                    if cached.is_none() && key.on_disk {
+                        let disk_key = key.clone();
+                        cached = spawn_tokio(async move {
+                            tokio::task::spawn_blocking(move || aqw_cache::read_disk(&disk_key))
+                                .await
+                                .ok()
+                                .flatten()
+                        })
+                        .await;
+                        if let Some(bytes) = &cached {
+                            aqw_cache::put_memory(key, bytes);
+                        }
+                    }
+                    if let Some(bytes) = cached {
+                        return Ok(Box::new(Response {
+                            url: processed_url.to_string(),
+                            response_body: ResponseBody::File(Ok(bytes)),
+                            text_encoding: None,
+                            status: 200,
+                            redirected: false,
+                        }) as Box<dyn SuccessResponse>);
+                    }
+                }
+
                 let client = client.ok_or_else(|| ErrorResponse {
                     url: processed_url.to_string(),
                     error: Error::FetchError("Network unavailable".to_string()),
@@ -328,6 +363,27 @@ impl<F: FutureSpawner<Error> + 'static, I: NavigatorInterface> NavigatorBackend
                         response.content_length().unwrap_or_default(),
                     );
                     return Err(ErrorResponse { url, error });
+                }
+
+                if let Some(key) = &cache_key {
+                    // Read the whole body now so it can be stored.
+                    let body_url = url.clone();
+                    let bytes = spawn_tokio(async move { response.bytes().await })
+                        .await
+                        .map_err(|e| ErrorResponse {
+                            url: body_url,
+                            error: Error::FetchError(e.to_string()),
+                        })?
+                        .to_vec();
+                    aqw_cache::put_memory(key, &bytes);
+                    aqw_cache::write_disk(key, &bytes);
+                    return Ok(Box::new(Response {
+                        url,
+                        response_body: ResponseBody::File(Ok(bytes)),
+                        text_encoding,
+                        status,
+                        redirected,
+                    }) as Box<dyn SuccessResponse>);
                 }
 
                 let response: Box<dyn SuccessResponse> = Box::new(Response {

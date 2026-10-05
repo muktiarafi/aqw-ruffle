@@ -154,6 +154,11 @@ fn main() -> Result<(), Error> {
     let opt = Opt::parse();
     let preferences = GlobalPreferences::load(opt)?;
 
+    // AQW: keep downloaded game files (items, armors, maps) between sessions.
+    ruffle_frontend_utils::backends::navigator::set_aqw_asset_cache_dir(
+        preferences.cli.cache_directory.join("aqw-assets"),
+    );
+
     let logs_path = &preferences.cli.cache_directory.join("log");
     let log_path = preferences.log_filename_pattern().create_path(logs_path);
     if let Some(parent) = log_path.parent() {

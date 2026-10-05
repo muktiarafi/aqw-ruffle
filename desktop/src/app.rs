@@ -43,6 +43,34 @@ struct MainWindow {
     event_loop_proxy: EventLoopProxy<RuffleEvent>,
     /// AQW smooth motion: when the last in-between redraw was requested.
     aqw_last_smooth_redraw: Instant,
+    /// AQW load spreading: async tasks (mostly finished downloads being turned
+    /// into avatar parts) waiting for the next event-loop pass, and how much
+    /// task time the current pass has used.
+    aqw_task_queue: std::collections::VecDeque<crate::player::PlayerRunnable>,
+    aqw_task_time: std::time::Duration,
+    aqw_tasks_run: u32,
+    aqw_pass_start: Instant,
+}
+
+/// Per event-loop pass, run async tasks for at most this long before letting
+/// a frame be drawn. One task can still exceed it; it just won't be followed
+/// by more in the same pass.
+const AQW_TASK_BUDGET: std::time::Duration = std::time::Duration::from_millis(6);
+
+fn aqw_task_spreading_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        !std::env::var("RUFFLE_AQW_NO_TASK_SPREAD")
+            .is_ok_and(|v| !matches!(v.trim(), "" | "0" | "false" | "off"))
+    })
+}
+
+fn aqw_diagnostics_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        std::env::var("RUFFLE_AQW_DIAGNOSTICS")
+            .is_ok_and(|v| !matches!(v.trim(), "" | "0" | "false" | "off"))
+    })
 }
 
 /// Smooth-motion redraw rates F8 cycles through (after "off").
@@ -55,6 +83,62 @@ fn window_icon() -> Icon {
 }
 
 impl MainWindow {
+    /// Runs a task now if this pass still has task budget, otherwise queues it
+    /// for the next pass so the frame in between can be drawn.
+    fn aqw_run_or_queue_task(&mut self, task: crate::player::PlayerRunnable) {
+        if !aqw_task_spreading_enabled() {
+            self.player.poll(task);
+            return;
+        }
+        if self.aqw_task_queue.is_empty() && self.aqw_task_time < AQW_TASK_BUDGET {
+            self.aqw_run_task(task);
+        } else {
+            self.aqw_task_queue.push_back(task);
+        }
+    }
+
+    fn aqw_run_task(&mut self, task: crate::player::PlayerRunnable) {
+        let started = Instant::now();
+        self.player.poll(task);
+        self.aqw_task_time += started.elapsed();
+        self.aqw_tasks_run += 1;
+    }
+
+    /// Start of an event-loop pass: fresh budget, then run queued tasks.
+    fn aqw_begin_pass(&mut self) {
+        self.aqw_pass_start = Instant::now();
+        self.aqw_task_time = Default::default();
+        self.aqw_tasks_run = 0;
+        while self.aqw_task_time < AQW_TASK_BUDGET {
+            let Some(task) = self.aqw_task_queue.pop_front() else {
+                break;
+            };
+            self.aqw_run_task(task);
+        }
+        if !self.aqw_task_queue.is_empty() {
+            // Make sure a frame gets drawn before the next batch.
+            self.check_redraw();
+        }
+    }
+
+    /// End of an event-loop pass: report long passes when diagnosing.
+    fn aqw_end_pass(&self) {
+        if !aqw_diagnostics_enabled() {
+            return;
+        }
+        let pass = self.aqw_pass_start.elapsed();
+        if pass.as_millis() >= 40 {
+            tracing::info!(
+                target: "aqw_diag",
+                "AQW hitch: pass_ms={} task_ms={} tasks={} queued={}",
+                pass.as_millis(),
+                self.aqw_task_time.as_millis(),
+                self.aqw_tasks_run,
+                self.aqw_task_queue.len()
+            );
+        }
+    }
+
     /// F8 = next smooth-motion setting, Shift+F8 = previous one.
     /// Cycle: off -> 30 -> 45 -> 60 -> off ...
     fn aqw_cycle_fps(&mut self, backwards: bool) {
@@ -514,6 +598,10 @@ impl ApplicationHandler<RuffleEvent> for App {
     fn new_events(&mut self, event_loop: &ActiveEventLoop, cause: StartCause) {
         enter_runtime!(self);
 
+        if let Some(main_window) = &mut self.main_window {
+            main_window.aqw_begin_pass();
+        }
+
         if cause == StartCause::Init {
             let movie_url = self.preferences.cli.movie_url.clone();
             let icon = window_icon();
@@ -620,6 +708,10 @@ impl ApplicationHandler<RuffleEvent> for App {
                 next_frame_time: None,
                 event_loop_proxy,
                 aqw_last_smooth_redraw: Instant::now(),
+                aqw_task_queue: Default::default(),
+                aqw_task_time: Default::default(),
+                aqw_tasks_run: 0,
+                aqw_pass_start: Instant::now(),
             });
         }
     }
@@ -630,7 +722,9 @@ impl ApplicationHandler<RuffleEvent> for App {
         enter_runtime!(self);
 
         match (&mut self.main_window, event) {
-            (Some(main_window), RuffleEvent::TaskPoll(task)) => main_window.player.poll(task),
+            (Some(main_window), RuffleEvent::TaskPoll(task)) => {
+                main_window.aqw_run_or_queue_task(task)
+            }
 
             (Some(main_window), RuffleEvent::OnMetadata(swf_header)) => {
                 main_window.on_metadata(swf_header)
@@ -761,6 +855,11 @@ impl ApplicationHandler<RuffleEvent> for App {
             if let Some(next_frame_time) = main_window.next_frame_time {
                 event_loop.set_control_flow(ControlFlow::WaitUntil(next_frame_time));
             }
+            // AQW load spreading: come straight back for queued tasks.
+            if !main_window.aqw_task_queue.is_empty() {
+                event_loop.set_control_flow(ControlFlow::WaitUntil(Instant::now()));
+            }
+            main_window.aqw_end_pass();
         }
     }
 
