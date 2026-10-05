@@ -12,6 +12,8 @@ pub struct Shaders {
     /// avoid changing initially-in-range rgb values (regadless of whether
     /// dividing by the alpha value would produce an out-of-range value).
     pub bitmap_shader: wgpu::ShaderModule,
+    /// `bitmap.wgsl` with its output remapped for `TrivialBlend::Overlay2x`.
+    pub bitmap_overlay2x_shader: wgpu::ShaderModule,
     pub gradient_shader: wgpu::ShaderModule,
     pub copy_shader: wgpu::ShaderModule,
     pub copy_sharp_shader: wgpu::ShaderModule,
@@ -33,6 +35,14 @@ impl Shaders {
             "bitmap.wgsl",
             include_str!("../shaders/bitmap.wgsl"),
         );
+        let bitmap_overlay2x_shader = {
+            let source = include_str!("../shaders/bitmap.wgsl").replace(
+                "    return color;\n}",
+                "    return vec4<f32>((2.0 * color.rgb + 1.0 - color.a) * 0.5, color.a);\n}",
+            );
+            debug_assert!(source.contains("1.0 - color.a) * 0.5"));
+            make_shader(device, "bitmap_overlay2x.wgsl", &source)
+        };
         let copy_shader = make_shader(device, "copy.wgsl", include_str!("../shaders/copy.wgsl"));
         let copy_sharp_shader = {
             let source = include_str!("../shaders/copy_sharp.wgsl").replace(
@@ -208,6 +218,7 @@ impl Shaders {
         Self {
             color_shader,
             bitmap_shader,
+            bitmap_overlay2x_shader,
             gradient_shader,
             copy_shader,
             copy_sharp_shader,

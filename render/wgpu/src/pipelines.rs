@@ -159,7 +159,11 @@ impl Pipelines {
                 &format!("Bitmap ({blend:?})"),
                 device,
                 format,
-                &shaders.bitmap_shader,
+                if matches!(blend, TrivialBlend::Overlay2x) {
+                    &shaders.bitmap_overlay2x_shader
+                } else {
+                    &shaders.bitmap_shader
+                },
                 msaa_sample_count,
                 &VERTEX_BUFFERS_DESCRIPTION_POS,
                 &bitmap_blend_bindings,

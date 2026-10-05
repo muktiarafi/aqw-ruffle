@@ -280,6 +280,11 @@ pub enum TrivialBlend {
     Subtract,
     Screen,
     Multiply,
+    /// Approximate overlay/hardlight ("modulate 2x"). Must be drawn with the
+    /// `bitmap_overlay2x` shader, which outputs `(2*src + 1 - src_alpha) / 2`;
+    /// with this blend state that gives `dst * (2*src + 1 - src_alpha)`, i.e.
+    /// `dst*(1-a) + a*(2*src*dst)` -- the exact overlay for dst <= 0.5.
+    Overlay2x,
 }
 
 impl TrivialBlend {
@@ -315,6 +320,14 @@ impl TrivialBlend {
                 color: wgpu::BlendComponent {
                     src_factor: wgpu::BlendFactor::Dst,
                     dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                    operation: wgpu::BlendOperation::Add,
+                },
+                alpha: wgpu::BlendComponent::OVER,
+            },
+            TrivialBlend::Overlay2x => wgpu::BlendState {
+                color: wgpu::BlendComponent {
+                    src_factor: wgpu::BlendFactor::Dst,
+                    dst_factor: wgpu::BlendFactor::Src,
                     operation: wgpu::BlendOperation::Add,
                 },
                 alpha: wgpu::BlendComponent::OVER,

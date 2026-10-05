@@ -802,6 +802,12 @@ impl CommandHandler for WgpuCommandHandler<'_> {
             BlendType::Trivial(TrivialBlend::Normal)
         } else if is_multiply && self.dest_opaque && multiply_fixed_function() {
             BlendType::Trivial(TrivialBlend::Multiply)
+        } else if matches!(
+            blend_type,
+            BlendType::Complex(ComplexBlend::Overlay | ComplexBlend::HardLight)
+        ) && ruffle_render::backend::aqw_fast_overlay_enabled()
+        {
+            BlendType::Trivial(TrivialBlend::Overlay2x)
         } else {
             blend_type
         };

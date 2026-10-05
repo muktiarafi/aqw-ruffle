@@ -2262,6 +2262,12 @@ impl Player {
         self.needs_render = true;
     }
 
+    /// Ask for a redraw even though nothing in the movie changed (e.g. a
+    /// renderer setting was switched).
+    pub fn set_needs_render(&mut self) {
+        self.needs_render = true;
+    }
+
     pub fn aqw_smooth_fps(&self) -> Option<f64> {
         self.aqw_interp_fps
     }

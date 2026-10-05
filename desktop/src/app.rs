@@ -169,12 +169,42 @@ impl MainWindow {
             None => format!("{game_fps} FPS"),
         };
         tracing::info!("AQW smooth motion: {label}");
-        self.gui.window().set_title(&format!(
-            "{} - {label}  [F8 to change]",
-            crate::artix::window_title()
-        ));
+        self.aqw_update_title(Some(label));
         self.next_frame_time = Some(Instant::now());
         self.gui.window().request_redraw();
+    }
+
+    /// F7: fast overlay effects on/off.
+    fn aqw_toggle_fast_overlay(&mut self) {
+        let enabled = !ruffle_render::backend::aqw_fast_overlay_enabled();
+        ruffle_render::backend::set_aqw_fast_overlay(enabled);
+        tracing::info!("AQW fast overlay: {enabled}");
+        self.aqw_update_title(None);
+        if let Some(mut player) = self.player.get() {
+            player.set_needs_render();
+        }
+        self.gui.window().request_redraw();
+    }
+
+    fn aqw_update_title(&self, smooth_label: Option<String>) {
+        let smooth_label = smooth_label.unwrap_or_else(|| {
+            self.player
+                .get()
+                .map(|player| match player.aqw_smooth_fps() {
+                    Some(fps) => format!("Smooth {fps} FPS (game {})", player.frame_rate()),
+                    None => format!("{} FPS", player.frame_rate()),
+                })
+                .unwrap_or_default()
+        });
+        let overlay = if ruffle_render::backend::aqw_fast_overlay_enabled() {
+            "Fast effects ON"
+        } else {
+            "Fast effects OFF"
+        };
+        self.gui.window().set_title(&format!(
+            "{} - {smooth_label} [F8] - {overlay} [F7]",
+            crate::artix::window_title()
+        ));
     }
 
     pub fn window_event(&mut self, event_loop: &ActiveEventLoop, event: WindowEvent) {
@@ -341,6 +371,9 @@ impl MainWindow {
                     ElementState::Pressed => {
                         if event.physical_key == PhysicalKey::Code(KeyCode::F9) {
                             ruffle_core::aqw_crt_toggle_external();
+                        }
+                        if event.physical_key == PhysicalKey::Code(KeyCode::F7) && !event.repeat {
+                            self.aqw_toggle_fast_overlay();
                         }
                         if event.physical_key == PhysicalKey::Code(KeyCode::F8) && !event.repeat {
                             self.aqw_cycle_fps(self.modifiers.state().shift_key());

@@ -745,6 +745,27 @@ pub struct ViewportDimensions {
 
 static AQW_CRT_FILTER: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
+/// AQW fast overlay: draw `overlay`/`hardlight` blend layers with a one-step
+/// "modulate 2x" approximation instead of the exact multi-pass blend.
+/// Exact wherever the backdrop is at or below mid-grey; brighter backdrops
+/// come out somewhat brighter. Starts from `RUFFLE_AQW_FAST_OVERLAY`.
+static AQW_FAST_OVERLAY: std::sync::OnceLock<std::sync::atomic::AtomicBool> =
+    std::sync::OnceLock::new();
+
+fn aqw_fast_overlay_flag() -> &'static std::sync::atomic::AtomicBool {
+    AQW_FAST_OVERLAY.get_or_init(|| {
+        std::sync::atomic::AtomicBool::new(aqw_env_flag("RUFFLE_AQW_FAST_OVERLAY", false))
+    })
+}
+
+pub fn aqw_fast_overlay_enabled() -> bool {
+    aqw_fast_overlay_flag().load(std::sync::atomic::Ordering::Relaxed)
+}
+
+pub fn set_aqw_fast_overlay(enabled: bool) {
+    aqw_fast_overlay_flag().store(enabled, std::sync::atomic::Ordering::Relaxed);
+}
+
 pub fn aqw_crt_filter_enabled() -> bool {
     AQW_CRT_FILTER.load(std::sync::atomic::Ordering::Relaxed)
 }
