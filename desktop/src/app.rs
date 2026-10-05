@@ -41,14 +41,13 @@ struct MainWindow {
     time: Instant,
     next_frame_time: Option<Instant>,
     event_loop_proxy: EventLoopProxy<RuffleEvent>,
-    /// AQW FPS switcher (F8): the frame rate the game started with, captured
-    /// on the first press, and which entry of the cycle is active.
-    aqw_default_fps: Option<f64>,
-    aqw_fps_index: usize,
+    /// AQW smooth motion: when the last in-between redraw was requested.
+    aqw_last_smooth_redraw: Instant,
 }
 
-/// Frame rates F8 cycles through after the game's default.
-const AQW_FPS_CHOICES: [f64; 3] = [30.0, 45.0, 60.0];
+/// Smooth-motion redraw rates F8 cycles through (after "off").
+/// The game itself always keeps running at its own frame rate.
+const AQW_SMOOTH_CHOICES: [f64; 3] = [30.0, 45.0, 60.0];
 
 fn window_icon() -> Icon {
     let icon_bytes = crate::artix::window_icon_rgba();
@@ -56,32 +55,42 @@ fn window_icon() -> Icon {
 }
 
 impl MainWindow {
-    /// F8 = next frame rate, Shift+F8 = previous one.
-    /// Cycle: game default -> 30 -> 45 -> 60 -> game default ...
+    /// F8 = next smooth-motion setting, Shift+F8 = previous one.
+    /// Cycle: off -> 30 -> 45 -> 60 -> off ...
     fn aqw_cycle_fps(&mut self, backwards: bool) {
         let Some(mut player) = self.player.get() else {
             return;
         };
-        let default_fps = *self.aqw_default_fps.get_or_insert(player.frame_rate());
-        let count = AQW_FPS_CHOICES.len() + 1;
-        self.aqw_fps_index = if backwards {
-            (self.aqw_fps_index + count - 1) % count
+        let count = AQW_SMOOTH_CHOICES.len() + 1;
+        // Index 0 = off, 1.. = AQW_SMOOTH_CHOICES. Derive it from the player so
+        // a value set via RUFFLE_AQW_SMOOTH at launch is picked up.
+        let current = match player.aqw_smooth_fps() {
+            None => 0,
+            Some(fps) => AQW_SMOOTH_CHOICES
+                .iter()
+                .position(|choice| (choice - fps).abs() < 0.5)
+                .map_or(count - 1, |i| i + 1),
+        };
+        let next = if backwards {
+            (current + count - 1) % count
         } else {
-            (self.aqw_fps_index + 1) % count
+            (current + 1) % count
         };
-        let (fps, label) = match self.aqw_fps_index {
-            0 => (default_fps, format!("{default_fps} FPS (default)")),
-            i => (AQW_FPS_CHOICES[i - 1], format!("{} FPS", AQW_FPS_CHOICES[i - 1])),
-        };
-        player.aqw_set_frame_rate(fps);
+        let smooth = (next > 0).then(|| AQW_SMOOTH_CHOICES[next - 1]);
+        player.aqw_set_smooth_fps(smooth);
+        let game_fps = player.frame_rate();
         drop(player);
-        tracing::info!("AQW FPS switcher: now {label}");
+        let label = match smooth {
+            Some(fps) => format!("Smooth {fps} FPS (game {game_fps})"),
+            None => format!("{game_fps} FPS"),
+        };
+        tracing::info!("AQW smooth motion: {label}");
         self.gui.window().set_title(&format!(
             "{} - {label}  [F8 to change]",
             crate::artix::window_title()
         ));
-        // Re-schedule the next frame at the new rate straight away.
         self.next_frame_time = Some(Instant::now());
+        self.gui.window().request_redraw();
     }
 
     pub fn window_event(&mut self, event_loop: &ActiveEventLoop, event: WindowEvent) {
@@ -414,10 +423,24 @@ impl MainWindow {
             let dt = FloatDuration::from_std(new_time.duration_since(self.time));
             if dt.as_millis() > 0.0 {
                 self.time = new_time;
+                let mut smooth_interval = None;
                 self.next_frame_time = self.player.get().map(|mut player| {
                     player.tick(dt);
-                    new_time + player.time_til_next_frame()
+                    let mut wait = player.time_til_next_frame();
+                    // AQW smooth motion: wake up for in-between redraws too.
+                    smooth_interval = player.aqw_time_til_next_smooth_redraw();
+                    if let Some(interval) = smooth_interval {
+                        wait = wait.min(interval);
+                    }
+                    new_time + wait
                 });
+                if let Some(interval) = smooth_interval
+                    && new_time.duration_since(self.aqw_last_smooth_redraw) + interval / 8
+                        >= interval
+                {
+                    self.aqw_last_smooth_redraw = new_time;
+                    self.gui.window().request_redraw();
+                }
                 self.check_redraw();
             }
         }
@@ -596,8 +619,7 @@ impl ApplicationHandler<RuffleEvent> for App {
                 time: Instant::now(),
                 next_frame_time: None,
                 event_loop_proxy,
-                aqw_default_fps: None,
-                aqw_fps_index: 0,
+                aqw_last_smooth_redraw: Instant::now(),
             });
         }
     }

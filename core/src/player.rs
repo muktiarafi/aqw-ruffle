@@ -389,6 +389,10 @@ pub struct Player {
 
     frame_rate: f64,
     forced_frame_rate: bool,
+    /// AQW smooth motion: target redraw rate (None = off), and a counter of
+    /// game frames run so far.
+    aqw_interp_fps: Option<f64>,
+    aqw_logic_frame: u32,
     actions_since_timeout_check: u32,
 
     frame_phase: FramePhase,
@@ -2071,6 +2075,7 @@ impl Player {
 
     #[instrument(level = "debug", skip_all)]
     pub fn run_frame(&mut self) {
+        self.aqw_logic_frame = self.aqw_logic_frame.wrapping_add(1);
         let frame_time = self.frame_time(750_000_000.0);
         let frame_time = Duration::from_nanos(frame_time as u64);
         let (mut execution_limit, may_execute_while_streaming) = match self.load_behavior {
@@ -2120,6 +2125,17 @@ impl Player {
         }
 
         let mut background_color = Color::WHITE;
+
+        let frame_duration = self.frame_duration().as_millis();
+        crate::display_object::aqw_interp_begin(crate::display_object::AqwInterpFrame {
+            enabled: self.aqw_interp_fps.is_some() && self.is_playing(),
+            frame: self.aqw_logic_frame,
+            alpha: if frame_duration > 0.0 {
+                self.frame_accumulator.as_millis() / frame_duration
+            } else {
+                1.0
+            },
+        });
 
         let (cache_draws, commands) = self.enter_arena_mut(|gc_context, gc_root, this| {
             let stage = gc_root.stage;
@@ -2238,6 +2254,28 @@ impl Player {
     /// AQW FPS switcher: change the playback frame rate while the movie is
     /// running. The rate is also locked, so the game's own `stage.frameRate`
     /// writes can't undo the user's choice.
+    /// AQW smooth motion: redraw up to `fps` times per second, drawing moving
+    /// objects between their positions on consecutive game frames. The game
+    /// itself keeps running at its own frame rate. `None` turns it off.
+    pub fn aqw_set_smooth_fps(&mut self, fps: Option<f64>) {
+        self.aqw_interp_fps = fps.filter(|fps| fps.is_finite() && *fps > 0.0);
+        self.needs_render = true;
+    }
+
+    pub fn aqw_smooth_fps(&self) -> Option<f64> {
+        self.aqw_interp_fps
+    }
+
+    /// When smooth motion is on and something is mid-motion, how long until
+    /// the next in-between redraw is due.
+    pub fn aqw_time_til_next_smooth_redraw(&self) -> Option<Duration> {
+        let fps = self.aqw_interp_fps?;
+        if !self.is_playing() || !crate::display_object::aqw_interp_moved() {
+            return None;
+        }
+        Some(Duration::from_secs_f64(1.0 / fps))
+    }
+
     pub fn aqw_set_frame_rate(&mut self, frame_rate: f64) {
         if !frame_rate.is_finite() || frame_rate <= 0.0 {
             return;
@@ -3145,6 +3183,11 @@ impl PlayerBuilder {
                 // Timing
                 frame_rate,
                 forced_frame_rate,
+                aqw_interp_fps: std::env::var("RUFFLE_AQW_SMOOTH")
+                    .ok()
+                    .and_then(|v| v.trim().parse::<f64>().ok())
+                    .filter(|fps| fps.is_finite() && *fps > 0.0),
+                aqw_logic_frame: 1,
                 frame_phase: Default::default(),
                 frame_accumulator: FloatDuration::ZERO,
                 recent_run_frame_timings: VecDeque::with_capacity(10),

@@ -1059,6 +1059,11 @@ pub struct DisplayObjectBase<'gc> {
 
     /// Rectangle used for 9-slice scaling (`DisplayObject.scale9grid`).
     scaling_grid: Cell<Rectangle<Twips>>,
+
+    /// AQW smooth motion: this object's position at the previous and the
+    /// current game frame, used to draw in-between positions.
+    #[collect(require_static)]
+    aqw_interp: Cell<AqwInterpSlot>,
 }
 
 #[derive(Clone)]
@@ -1103,6 +1108,7 @@ impl Default for DisplayObjectBase<'_> {
             scroll_rect: Cell::new(None),
             next_scroll_rect: Default::default(),
             scaling_grid: Default::default(),
+            aqw_interp: Cell::new(AqwInterpSlot::default()),
         }
     }
 }
@@ -3885,6 +3891,140 @@ fn note_cache_decision<'gc>(
     );
 }
 
+/// --- AQW smooth motion (render interpolation) -------------------------
+///
+/// The game keeps running at its own frame rate (24 FPS for AQW), so every
+/// frame- and time-based piece of game logic behaves exactly as designed.
+/// The host may redraw more often than that; on those in-between redraws each
+/// display object is drawn part-way between where it was on the previous game
+/// frame and where it is now. Only translation is interpolated: scale,
+/// rotation and skew stay exact, which keeps bitmap caches valid (they are
+/// only invalidated by the non-translation part of the matrix).
+
+#[derive(Clone, Copy, Default, Debug)]
+pub struct AqwInterpSlot {
+    valid: bool,
+    stamp: u32,
+    from: (Twips, Twips),
+    to: (Twips, Twips),
+}
+
+#[derive(Clone, Copy, Default, Debug)]
+pub struct AqwInterpFrame {
+    pub enabled: bool,
+    /// Counter of game frames run so far.
+    pub frame: u32,
+    /// 0.0 = just ran a game frame, 1.0 = next game frame is due.
+    pub alpha: f64,
+}
+
+/// Moves bigger than this between two game frames are treated as teleports
+/// and drawn without interpolation (100 px).
+const AQW_INTERP_MAX_STEP_TWIPS: i32 = 100 * 20;
+
+thread_local! {
+    static AQW_INTERP: Cell<AqwInterpFrame> = Cell::new(AqwInterpFrame::default());
+    static AQW_INTERP_MOVED: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Called by the player right before drawing a frame.
+pub fn aqw_interp_begin(state: AqwInterpFrame) {
+    AQW_INTERP.with(|c| c.set(state));
+    AQW_INTERP_MOVED.with(|c| c.set(false));
+}
+
+/// Whether the last drawn frame had anything mid-motion (i.e. extra redraws
+/// before the next game frame would show something different).
+pub fn aqw_interp_moved() -> bool {
+    AQW_INTERP_MOVED.with(Cell::get)
+}
+
+fn aqw_interpolate_translation(base: &DisplayObjectBase<'_>, matrix: &mut Matrix) {
+    let state = AQW_INTERP.with(Cell::get);
+    if !state.enabled {
+        return;
+    }
+    let current = (matrix.tx, matrix.ty);
+    let mut slot = base.aqw_interp.get();
+    if !slot.valid || slot.stamp != state.frame {
+        // First draw since a new game frame ran: shift the window along.
+        let continuing = slot.valid && slot.stamp == state.frame.wrapping_sub(1);
+        slot.from = if continuing { slot.to } else { current };
+        slot.to = current;
+        slot.stamp = state.frame;
+        slot.valid = true;
+        base.aqw_interp.set(slot);
+    } else if slot.to != current {
+        // Moved by a script between game frames (mouse handlers, drag, etc.):
+        // show it where it is right away.
+        slot.from = current;
+        slot.to = current;
+        base.aqw_interp.set(slot);
+        return;
+    }
+
+    let dx = slot.to.0.get() - slot.from.0.get();
+    let dy = slot.to.1.get() - slot.from.1.get();
+    if (dx == 0 && dy == 0)
+        || dx.abs() > AQW_INTERP_MAX_STEP_TWIPS
+        || dy.abs() > AQW_INTERP_MAX_STEP_TWIPS
+    {
+        return;
+    }
+    let remaining = 1.0 - state.alpha.clamp(0.0, 1.0);
+    if remaining > 0.0 {
+        AQW_INTERP_MOVED.with(|c| c.set(true));
+    }
+    matrix.tx = Twips::new(slot.to.0.get() - (f64::from(dx) * remaining).round() as i32);
+    matrix.ty = Twips::new(slot.to.1.get() - (f64::from(dy) * remaining).round() as i32);
+}
+
+#[cfg(test)]
+mod aqw_interp_tests {
+    use super::*;
+
+    fn draw(base: &DisplayObjectBase<'_>, frame: u32, alpha: f64, x_px: i32) -> f64 {
+        aqw_interp_begin(AqwInterpFrame { enabled: true, frame, alpha });
+        let mut m = Matrix::translate(Twips::from_pixels_i32(x_px), Twips::ZERO);
+        aqw_interpolate_translation(base, &mut m);
+        m.tx.to_pixels()
+    }
+
+    #[test]
+    fn slides_between_game_frames() {
+        let base = DisplayObjectBase::default();
+        assert_eq!(draw(&base, 1, 0.0, 0), 0.0); // first sight: no history
+        // Game frame 2: object moved 0 -> 10 px.
+        assert_eq!(draw(&base, 2, 0.0, 10), 0.0);
+        assert_eq!(draw(&base, 2, 0.5, 10), 5.0);
+        assert!(aqw_interp_moved());
+        assert_eq!(draw(&base, 2, 1.0, 10), 10.0);
+        // Game frame 3: 10 -> 20 px.
+        assert_eq!(draw(&base, 3, 0.25, 20), 12.5);
+    }
+
+    #[test]
+    fn teleports_and_script_moves_snap() {
+        let base = DisplayObjectBase::default();
+        draw(&base, 1, 0.0, 0);
+        assert_eq!(draw(&base, 2, 0.0, 500), 500.0); // > 100 px jump
+        // Moved by a script between game frames: shown right away.
+        draw(&base, 3, 0.0, 510);
+        assert_eq!(draw(&base, 3, 0.5, 600), 600.0);
+        // Skipped a game frame (not drawn): no stale slide.
+        assert_eq!(draw(&base, 5, 0.0, 620), 620.0);
+    }
+
+    #[test]
+    fn off_means_untouched() {
+        let base = DisplayObjectBase::default();
+        aqw_interp_begin(AqwInterpFrame { enabled: false, frame: 2, alpha: 0.5 });
+        let mut m = Matrix::translate(Twips::from_pixels_i32(10), Twips::ZERO);
+        aqw_interpolate_translation(&base, &mut m);
+        assert_eq!(m.tx.to_pixels(), 10.0);
+    }
+}
+
 pub fn render_base<'gc>(
     this: DisplayObject<'gc>,
     context: &mut RenderContext<'_, 'gc>,
@@ -3906,7 +4046,10 @@ pub fn render_base<'gc>(
     }
 
     if options.apply_transform {
-        let transform = this.base().transform(options.apply_matrix);
+        let mut transform = this.base().transform(options.apply_matrix);
+        if options.apply_matrix && !context.is_offscreen {
+            aqw_interpolate_translation(&this.base(), &mut transform.matrix);
+        }
         context.transform_stack.push(&transform);
         if aqw_flicker_probe_enabled() {
             note_position_oscillation(this, context);
