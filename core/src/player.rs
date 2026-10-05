@@ -2235,6 +2235,21 @@ impl Player {
         self.frame_rate
     }
 
+    /// AQW FPS switcher: change the playback frame rate while the movie is
+    /// running. The rate is also locked, so the game's own `stage.frameRate`
+    /// writes can't undo the user's choice.
+    pub fn aqw_set_frame_rate(&mut self, frame_rate: f64) {
+        if !frame_rate.is_finite() || frame_rate <= 0.0 {
+            return;
+        }
+        self.frame_rate = frame_rate;
+        self.forced_frame_rate = true;
+        // Drop any time banked at the old rate so the switch doesn't cause a
+        // burst of catch-up frames.
+        self.frame_accumulator = FloatDuration::ZERO;
+        self.audio.set_frame_rate(frame_rate);
+    }
+
     pub fn renderer(&self) -> &dyn RenderBackend {
         &*self.renderer
     }

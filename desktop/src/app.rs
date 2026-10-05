@@ -41,7 +41,14 @@ struct MainWindow {
     time: Instant,
     next_frame_time: Option<Instant>,
     event_loop_proxy: EventLoopProxy<RuffleEvent>,
+    /// AQW FPS switcher (F8): the frame rate the game started with, captured
+    /// on the first press, and which entry of the cycle is active.
+    aqw_default_fps: Option<f64>,
+    aqw_fps_index: usize,
 }
+
+/// Frame rates F8 cycles through after the game's default.
+const AQW_FPS_CHOICES: [f64; 3] = [30.0, 45.0, 60.0];
 
 fn window_icon() -> Icon {
     let icon_bytes = crate::artix::window_icon_rgba();
@@ -49,6 +56,34 @@ fn window_icon() -> Icon {
 }
 
 impl MainWindow {
+    /// F8 = next frame rate, Shift+F8 = previous one.
+    /// Cycle: game default -> 30 -> 45 -> 60 -> game default ...
+    fn aqw_cycle_fps(&mut self, backwards: bool) {
+        let Some(mut player) = self.player.get() else {
+            return;
+        };
+        let default_fps = *self.aqw_default_fps.get_or_insert(player.frame_rate());
+        let count = AQW_FPS_CHOICES.len() + 1;
+        self.aqw_fps_index = if backwards {
+            (self.aqw_fps_index + count - 1) % count
+        } else {
+            (self.aqw_fps_index + 1) % count
+        };
+        let (fps, label) = match self.aqw_fps_index {
+            0 => (default_fps, format!("{default_fps} FPS (default)")),
+            i => (AQW_FPS_CHOICES[i - 1], format!("{} FPS", AQW_FPS_CHOICES[i - 1])),
+        };
+        player.aqw_set_frame_rate(fps);
+        drop(player);
+        tracing::info!("AQW FPS switcher: now {label}");
+        self.gui.window().set_title(&format!(
+            "{} - {label}  [F8 to change]",
+            crate::artix::window_title()
+        ));
+        // Re-schedule the next frame at the new rate straight away.
+        self.next_frame_time = Some(Instant::now());
+    }
+
     pub fn window_event(&mut self, event_loop: &ActiveEventLoop, event: WindowEvent) {
         if matches!(event, WindowEvent::RedrawRequested) {
             // Don't render when minimized to avoid potential swap chain errors in `wgpu`.
@@ -213,6 +248,9 @@ impl MainWindow {
                     ElementState::Pressed => {
                         if event.physical_key == PhysicalKey::Code(KeyCode::F9) {
                             ruffle_core::aqw_crt_toggle_external();
+                        }
+                        if event.physical_key == PhysicalKey::Code(KeyCode::F8) && !event.repeat {
+                            self.aqw_cycle_fps(self.modifiers.state().shift_key());
                         }
                         self.player.handle_event(PlayerEvent::KeyDown { key });
                         if let Some(control_code) =
@@ -558,6 +596,8 @@ impl ApplicationHandler<RuffleEvent> for App {
                 time: Instant::now(),
                 next_frame_time: None,
                 event_loop_proxy,
+                aqw_default_fps: None,
+                aqw_fps_index: 0,
             });
         }
     }
